@@ -1,0 +1,12 @@
+node_modules
+dist
+*.db
+*.db-shm
+*.db-wal
+.git
+.gitignore
+.trae
+.trae-preflight.json
+.DS_Store
+*.log
+npm-debug.log*

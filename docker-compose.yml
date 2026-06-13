@@ -1,0 +1,17 @@
+version: '3.8'
+
+services:
+  judicial-app:
+    build: .
+    container_name: judicial-reservation-system
+    ports:
+      - "3000:3000"
+      - "5173:5173"
+    environment:
+      - NODE_ENV=development
+      - PORT=3000
+    volumes:
+      - ./api/judicial.db:/app/api/judicial.db
+      - ./api/judicial.db-shm:/app/api/judicial.db-shm
+      - ./api/judicial.db-wal:/app/api/judicial.db-wal
+    restart: unless-stopped

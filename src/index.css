@@ -1,0 +1,86 @@
+@import url('https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@300;400;500;600;700&family=Noto+Serif+SC:wght@400;500;600;700&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --judicial-primary: #1B2A4A;
+  --judicial-gold: #C8A45C;
+  --judicial-bg: #F5F6FA;
+  --judicial-success: #38A169;
+  --judicial-danger: #E53E3E;
+  --judicial-warning: #DD6B20;
+
+  font-family: 'Noto Sans SC', -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+  line-height: 1.5;
+  font-weight: 400;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  color: #1a202c;
+  background-color: var(--judicial-bg);
+}
+
+@layer components {
+  .btn-primary {
+    @apply bg-judicial-primary text-white rounded-judicial px-5 py-2.5 font-medium
+    hover:bg-judicial-primary-light active:bg-judicial-primary-dark
+    transition-colors duration-200 disabled:opacity-50 disabled:cursor-not-allowed;
+  }
+  .btn-danger {
+    @apply bg-judicial-danger text-white rounded-judicial px-5 py-2.5 font-medium
+    hover:bg-red-600 active:bg-red-700
+    transition-colors duration-200 disabled:opacity-50 disabled:cursor-not-allowed;
+  }
+  .btn-gold {
+    @apply bg-judicial-gold text-white rounded-judicial px-5 py-2.5 font-medium
+    hover:bg-judicial-gold-dark active:bg-judicial-gold-dark
+    transition-colors duration-200 disabled:opacity-50 disabled:cursor-not-allowed;
+  }
+  .btn-outline {
+    @apply border border-judicial-primary text-judicial-primary rounded-judicial px-5 py-2.5 font-medium
+    hover:bg-judicial-primary hover:text-white
+    transition-colors duration-200 disabled:opacity-50 disabled:cursor-not-allowed;
+  }
+  .card {
+    @apply bg-white rounded-judicial shadow-sm border border-gray-100 p-6;
+  }
+  .input-field {
+    @apply w-full rounded-judicial border border-gray-300 px-4 py-2.5 text-sm
+    focus:border-judicial-primary focus:ring-1 focus:ring-judicial-primary focus:outline-none
+    transition-colors duration-200 placeholder:text-gray-400;
+  }
+  .select-field {
+    @apply w-full rounded-judicial border border-gray-300 px-4 py-2.5 text-sm
+    focus:border-judicial-primary focus:ring-1 focus:ring-judicial-primary focus:outline-none
+    transition-colors duration-200 bg-white appearance-none cursor-pointer;
+  }
+}
+
+@layer utilities {
+  .skeleton {
+    @apply bg-gray-200 animate-pulse rounded;
+  }
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+}
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #c4c4c4;
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #999;
+}
