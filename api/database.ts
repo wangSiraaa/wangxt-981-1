@@ -143,6 +143,11 @@ export function initDatabase(): void {
     );
   `)
 
+  try { db.prepare('ALTER TABLE schedule ADD COLUMN urgent_approved INTEGER NOT NULL DEFAULT 0').run() } catch (_e) { /* ignore */ }
+  try { db.prepare('ALTER TABLE schedule ADD COLUMN urgent_approver TEXT').run() } catch (_e) { /* ignore */ }
+  try { db.prepare('ALTER TABLE schedule ADD COLUMN urgent_approve_note TEXT').run() } catch (_e) { /* ignore */ }
+  try { db.prepare('ALTER TABLE schedule ADD COLUMN urgent_approved_at TEXT').run() } catch (_e) { /* ignore */ }
+
   seedData(db)
 }
 

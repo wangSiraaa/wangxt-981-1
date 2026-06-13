@@ -194,6 +194,20 @@ router.get('/schedules/conflicts', (req: Request, res: Response): void => {
   res.json({ success: true, data: { has_conflicts: conflicts.length > 0, conflicts } })
 })
 
+router.get('/schedules/urgents', (_req: Request, res: Response): void => {
+  const db = getDb()
+  const sql = `
+    SELECT s.*, a.case_no, a.applicant_name, a.applicant_phone, a.appraisal_type, a.status as application_status, e.name as expert_name
+    FROM schedule s
+    JOIN application a ON s.application_id = a.id
+    JOIN expert e ON s.expert_id = e.id
+    WHERE s.is_urgent = 1 AND (s.urgent_approved IS NULL OR s.urgent_approved = 0) AND s.status != 'expired' AND s.status != 'completed'
+    ORDER BY s.created_at DESC
+  `
+  const urgents = db.prepare(sql).all()
+  res.json({ success: true, data: urgents })
+})
+
 router.post('/:id/urgent', (req: Request, res: Response): void => {
   const { urgent_reason, requester_name } = req.body
   if (!urgent_reason || !requester_name) {
@@ -240,9 +254,14 @@ router.put('/urgents/:id/approve', (req: Request, res: Response): void => {
     return
   }
 
+  db.prepare(
+    'UPDATE schedule SET urgent_approved = 1, urgent_approver = ?, urgent_approve_note = ?, urgent_approved_at = datetime(\'now\') WHERE id = ?',
+  ).run(approver_name, approver_note || null, req.params.id)
+
   addAuditLog(db, schedule.application_id, 'urgent_approve', approver_name, 'admin', `加急排程已批准${approver_note ? ': ' + approver_note : ''}`)
 
-  res.json({ success: true, data: { message: '加急已批准' } })
+  const updated = db.prepare('SELECT * FROM schedule WHERE id = ?').get(req.params.id)
+  res.json({ success: true, data: updated })
 })
 
 export default router

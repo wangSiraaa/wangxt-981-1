@@ -1,14 +1,14 @@
 import { useEffect, useState } from 'react';
 import { useAppStore } from '@/store/useAppStore';
 import { StatusBadge } from '@/components/StatusBadge';
-import { ShieldCheck, Zap, CheckCircle, XCircle, AlertTriangle, FileText } from 'lucide-react';
+import { ShieldCheck, Zap, CheckCircle, XCircle, AlertTriangle, FileText, Clock, User, MapPin } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 type Tab = 'withdrawal' | 'urgent';
 
 export default function Supervisor() {
   const withdrawals = useAppStore((s) => s.withdrawals);
-  const urgentApplications = useAppStore((s) => s.urgentApplications);
+  const urgentSchedules = useAppStore((s) => s.urgentApplications);
   const loading = useAppStore((s) => s.loading);
   const fetchWithdrawals = useAppStore((s) => s.fetchWithdrawals);
   const fetchUrgentApplications = useAppStore((s) => s.fetchUrgentApplications);
@@ -64,9 +64,9 @@ export default function Supervisor() {
         >
           <Zap size={14} className="inline mr-1" />
           加急审批
-          {urgentApplications.length > 0 && (
+          {urgentSchedules.length > 0 && (
             <span className="ml-1.5 bg-judicial-warning text-white text-xs px-1.5 py-0.5 rounded-full">
-              {urgentApplications.length}
+              {urgentSchedules.length}
             </span>
           )}
         </button>
@@ -133,46 +133,79 @@ export default function Supervisor() {
 
       {tab === 'urgent' && (
         <div className="space-y-4">
-          {urgentApplications.length === 0 ? (
+          {urgentSchedules.length === 0 ? (
             <div className="card text-center py-12 text-gray-400">
               <Zap size={48} className="mx-auto mb-3 opacity-30" />
               <p>暂无加急审批</p>
             </div>
           ) : (
-            urgentApplications.map((app) => (
-              <div key={app.id} className="card">
+            urgentSchedules.map((s) => (
+              <div key={s.id} className="card">
                 <div className="flex items-center justify-between mb-3">
                   <div className="flex items-center gap-2">
                     <Zap size={16} className="text-judicial-warning" />
-                    <span className="font-medium text-judicial-primary">{app.case_no}</span>
-                    <StatusBadge status={app.status} />
+                    <span className="font-medium text-judicial-primary">{(s as any).case_no}</span>
+                    <span className="text-xs bg-amber-100 text-amber-700 px-2 py-0.5 rounded-full font-medium">
+                      待审批
+                    </span>
                   </div>
-                  <span className="text-xs text-gray-400">{new Date(app.created_at).toLocaleString()}</span>
+                  <span className="text-xs text-gray-400">{new Date(s.created_at).toLocaleString()}</span>
                 </div>
-                <div className="grid grid-cols-3 gap-3 text-sm text-gray-600 mb-3">
-                  <div><span className="text-gray-400">申请人：</span>{app.applicant_name}</div>
-                  <div><span className="text-gray-400">鉴定类型：</span>{app.appraisal_type}</div>
-                  <div><span className="text-gray-400">联系电话：</span>{app.applicant_phone}</div>
+                <div className="grid grid-cols-2 gap-3 text-sm text-gray-600 mb-3">
+                  <div className="flex items-center gap-1.5">
+                    <User size={14} className="text-gray-400" />
+                    <span className="text-gray-400">申请人：</span>{(s as any).applicant_name}
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <FileText size={14} className="text-gray-400" />
+                    <span className="text-gray-400">鉴定类型：</span>{(s as any).appraisal_type}
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <Clock size={14} className="text-gray-400" />
+                    <span className="text-gray-400">排期：</span>{s.scheduled_date} {s.scheduled_time}
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <MapPin size={14} className="text-gray-400" />
+                    <span className="text-gray-400">地点：</span>{s.location}
+                  </div>
                 </div>
-                {app.urgent_reason && (
-                  <div className="p-2 bg-amber-50 text-judicial-warning text-sm rounded-judicial mb-3">
-                    加急原因：{app.urgent_reason}
+                {(s as any).expert_name && (
+                  <div className="text-sm text-gray-600 mb-3">
+                    <span className="text-gray-400">鉴定人：</span>{(s as any).expert_name}
+                  </div>
+                )}
+                {s.urgent_reason && (
+                  <div className="p-3 bg-amber-50 border border-amber-200 text-amber-800 text-sm rounded-judicial mb-3">
+                    <div className="flex items-center gap-1.5 font-medium mb-1">
+                      <Zap size={14} /> 加急原因
+                    </div>
+                    <div>{s.urgent_reason}</div>
                   </div>
                 )}
                 <div>
                   <textarea
-                    value={getNote(app.id)}
-                    onChange={(e) => setNote(app.id, e.target.value)}
+                    value={getNote(s.id)}
+                    onChange={(e) => setNote(s.id, e.target.value)}
                     className="input-field min-h-[60px] resize-none text-sm mb-2"
                     placeholder="审批意见（选填）"
                   />
                   <div className="flex gap-2">
                     <button
-                      onClick={() => approveUrgent(app.id, '主管', getNote(app.id))}
+                      onClick={() => approveUrgent(s.id, '主管', getNote(s.id))}
                       disabled={loading}
                       className="btn-primary text-sm flex items-center gap-1"
                     >
                       <CheckCircle size={14} /> 批准加急
+                    </button>
+                    <button
+                      onClick={() => {
+                        setNote(s.id, '');
+                        approveUrgent(s.id, '主管', '不予批准');
+                      }}
+                      disabled={loading}
+                      className="btn-danger text-sm flex items-center gap-1"
+                    >
+                      <XCircle size={14} /> 驳回
                     </button>
                   </div>
                 </div>

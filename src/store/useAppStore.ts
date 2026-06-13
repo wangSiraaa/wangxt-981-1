@@ -24,7 +24,7 @@ interface AppState {
   experts: Expert[];
   institutions: Institution[];
   withdrawals: WithdrawalRequest[];
-  urgentApplications: Application[];
+  urgentApplications: Schedule[];
   stats: { totalApplications: number; pendingReviews: number; upcomingSchedules: number; activeWarnings: number } | null;
   loading: boolean;
   error: string | null;
@@ -325,12 +325,11 @@ export const useAppStore = create<AppState>((set, get) => ({
     return false;
   },
 
-  fetchUrgentApplications: async (status) => {
+  fetchUrgentApplications: async () => {
     set({ loading: true });
-    const res = await api.applications.list(status);
+    const res = await api.schedules.listUrgents();
     if (res.success) {
-      const urgentApps = (res.data || []).filter((a: any) => a.is_urgent || a.isUrgent);
-      set({ urgentApplications: urgentApps, loading: false });
+      set({ urgentApplications: res.data || [], loading: false });
     } else {
       set({ error: res.error ?? '获取加急列表失败', loading: false });
     }

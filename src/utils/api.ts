@@ -66,6 +66,7 @@ export const api = {
 
   schedules: {
     list: () => request<Schedule[]>('/api/applications/schedules'),
+    listUrgents: () => request<Schedule[]>('/api/applications/schedules/urgents'),
     create: (applicationId: string, data: Record<string, unknown>) =>
       post<Schedule>(`/api/applications/${applicationId}/schedule`, data),
     update: (id: string, data: Record<string, unknown>) =>
