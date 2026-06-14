@@ -45,7 +45,7 @@ export default function DeadlinePage() {
 
   const filteredDeadlines = useMemo(() => {
     return deadlines.filter((d) => {
-      if (typeFilter && d.type !== typeFilter) return false;
+      if (typeFilter && d.deadline_type !== typeFilter) return false;
       if (statusFilter && d.status !== statusFilter) return false;
       return true;
     });
@@ -132,7 +132,7 @@ export default function DeadlinePage() {
                   <div className="flex items-center gap-2">
                     <Calendar size={14} className="text-gray-400" />
                     <span className="font-medium text-judicial-primary text-sm">申请ID: {d.application_id}</span>
-                    <span className="text-xs text-gray-400 bg-gray-50 px-2 py-0.5 rounded">{DEADLINE_TYPE_LABELS[d.type]}</span>
+                    <span className="text-xs text-gray-400 bg-gray-50 px-2 py-0.5 rounded">{DEADLINE_TYPE_LABELS[d.deadline_type]}</span>
                   </div>
                   <div className="flex items-center gap-2">
                     {(d.extended_days ?? 0) > 0 && (

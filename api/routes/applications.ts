@@ -1,6 +1,15 @@
 import { Router, type Request, type Response } from 'express'
 import { v4 as uuidv4 } from 'uuid'
-import { getDb, addBusinessDays, addAuditLog } from '../database.js'
+import {
+  getDb,
+  addBusinessDays,
+  addAuditLog,
+  calculateLegalDeadlines,
+  adjustDeadline,
+  adjustAllActiveDeadlines,
+  addStatusChangeLog,
+  createMaterialTransfer,
+} from '../database.js'
 
 const router = Router()
 
@@ -99,32 +108,105 @@ router.put('/:id/review', (req: Request, res: Response): void => {
     return
   }
 
+  const oldStatus = app.status
+
   if (decision === 'approve') {
-    db.prepare('UPDATE material SET status = ?, review_note = ? WHERE application_id = ? AND status = ?')
-      .run('approved', review_note || '审核通过', req.params.id, 'pending')
+    const transaction = db.transaction(() => {
+      db.prepare('UPDATE material SET status = ?, review_note = ? WHERE application_id = ? AND status = ?')
+        .run('approved', review_note || '审核通过', req.params.id, 'pending')
 
-    db.prepare('UPDATE application SET status = ?, updated_at = datetime(\'now\') WHERE id = ?')
-      .run('reviewed', req.params.id)
+      db.prepare('UPDATE application SET last_status = ?, status = ?, updated_at = datetime(\'now\') WHERE id = ?')
+        .run(oldStatus, 'reviewed', req.params.id)
 
-    addAuditLog(db, req.params.id, 'review_approve', reviewer_name, 'reviewer', '材料审核通过')
+      const pendingMaterials = db.prepare(
+        `SELECT * FROM material WHERE application_id = ? AND status = 'pending'`,
+      ).all(req.params.id) as any[]
+      for (const mat of pendingMaterials) {
+        createMaterialTransfer(
+          db,
+          mat.id,
+          req.params.id,
+          'applicant_to_review',
+          app.applicant_name,
+          'applicant',
+          reviewer_name,
+          'reviewer',
+          true,
+          false,
+          false,
+          '材料提交审核',
+        )
+      }
+
+      addStatusChangeLog(
+        db,
+        req.params.id,
+        oldStatus,
+        'reviewed',
+        reviewer_name,
+        'reviewer',
+        '材料审核通过，待受理',
+      )
+
+      addAuditLog(db, req.params.id, 'review_approve', reviewer_name, 'reviewer', '材料审核通过')
+    })
+    transaction()
   } else if (decision === 'reject') {
     const newCount = app.correction_count + 1
 
     if (newCount > app.max_corrections) {
-      db.prepare('UPDATE application SET status = ?, updated_at = datetime(\'now\') WHERE id = ?')
-        .run('terminated', req.params.id)
-      addAuditLog(db, req.params.id, 'terminate', reviewer_name, 'reviewer', `补正次数超过上限(${app.max_corrections})，申请终止`)
+      const transaction = db.transaction(() => {
+        db.prepare('UPDATE application SET last_status = ?, status = ?, updated_at = datetime(\'now\') WHERE id = ?')
+          .run(oldStatus, 'terminated', req.params.id)
+
+        addStatusChangeLog(
+          db,
+          req.params.id,
+          oldStatus,
+          'terminated',
+          reviewer_name,
+          'reviewer',
+          `补正次数超过上限(${app.max_corrections})次，申请终止`,
+        )
+
+        addAuditLog(db, req.params.id, 'terminate', reviewer_name, 'reviewer', `补正次数超过上限(${app.max_corrections})，申请终止`)
+      })
+      transaction()
       res.json({ success: true, data: { ...app, status: 'terminated', correction_count: newCount } })
       return
     }
 
-    db.prepare('UPDATE material SET status = ?, review_note = ? WHERE application_id = ? AND status = ?')
-      .run('rejected', review_note || '请补正', req.params.id, 'pending')
+    const transaction = db.transaction(() => {
+      db.prepare('UPDATE material SET status = ?, review_note = ? WHERE application_id = ? AND status = ?')
+        .run('rejected', review_note || '请补正', req.params.id, 'pending')
 
-    db.prepare('UPDATE application SET status = ?, correction_count = ?, updated_at = datetime(\'now\') WHERE id = ?')
-      .run('correction_needed', newCount, req.params.id)
+      db.prepare('UPDATE application SET last_status = ?, status = ?, correction_count = ?, updated_at = datetime(\'now\') WHERE id = ?')
+        .run(oldStatus, 'correction_needed', newCount, req.params.id)
 
-    addAuditLog(db, req.params.id, 'review_reject', reviewer_name, 'reviewer', `材料审核不通过，需补正(第${newCount}次)`)
+      adjustAllActiveDeadlines(
+        db,
+        req.params.id,
+        'supplement',
+        5,
+        `材料补正(第${newCount}次)，所有期限顺延5个工作日`,
+        reviewer_name,
+        'reviewer',
+        false,
+      )
+
+      addStatusChangeLog(
+        db,
+        req.params.id,
+        oldStatus,
+        'correction_needed',
+        reviewer_name,
+        'reviewer',
+        `材料审核不通过，需补正(第${newCount}次)，期限顺延5个工作日`,
+      )
+
+      addAuditLog(db, req.params.id, 'review_reject', reviewer_name, 'reviewer', `材料审核不通过，需补正(第${newCount}次)`)
+    })
+    transaction()
   } else {
     res.status(400).json({ success: false, error: '无效的审核决定', code: 'INVALID_DECISION' })
     return
@@ -167,39 +249,51 @@ router.put('/:id/accept', (req: Request, res: Response): void => {
   }
 
   const now = new Date().toISOString().slice(0, 10)
-  const deadlineTypes = [
-    { type: 'review', days: 5 },
-    { type: 'schedule', days: 10 },
-    { type: 'appraisal', days: 30 },
-    { type: 'completion', days: 60 },
-  ]
-
-  const insertDeadline = db.prepare(
-    `INSERT INTO deadline (id, application_id, type, base_date, deadline_date, holiday_extended, extended_days, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-  )
+  const oldStatus = app.status
 
   const transaction = db.transaction(() => {
-    db.prepare('UPDATE application SET status = ?, institution_id = ?, updated_at = datetime(\'now\') WHERE id = ?')
-      .run('fee_pending', institution_id, req.params.id)
+    db.prepare('UPDATE application SET last_status = ?, status = ?, institution_id = ?, updated_at = datetime(\'now\') WHERE id = ?')
+      .run(oldStatus, 'fee_pending', institution_id, req.params.id)
 
     if (inst) {
       db.prepare('UPDATE institution SET current_load = current_load + 1 WHERE id = ?').run(institution_id)
     }
 
-    for (const dl of deadlineTypes) {
-      const deadlineDate = addBusinessDays(db, now, dl.days)
-      const raw = new Date(now)
-      raw.setDate(raw.getDate() + dl.days)
-      const rawDeadline = raw.toISOString().slice(0, 10)
-      const extended = deadlineDate !== rawDeadline ? 1 : 0
-      const extDays = extended ? Math.round((new Date(deadlineDate).getTime() - new Date(rawDeadline).getTime()) / 86400000) : 0
-
-      insertDeadline.run(uuidv4(), req.params.id, dl.type, now, deadlineDate, extended, extDays, 'active')
-    }
+    calculateLegalDeadlines(db, req.params.id, now)
 
     const baseFee = { '法医临床鉴定': 3000, '文书物证鉴定': 2000, '痕迹物证鉴定': 2500, '声像资料鉴定': 2500 }[app.appraisal_type] || 2000
     db.prepare('INSERT INTO fee (id, application_id, amount, status) VALUES (?, ?, ?, ?)')
       .run(uuidv4(), req.params.id, baseFee, 'unpaid')
+
+    const approvedMaterials = db.prepare(
+      `SELECT * FROM material WHERE application_id = ? AND status = 'approved'`,
+    ).all(req.params.id) as any[]
+    for (const mat of approvedMaterials) {
+      createMaterialTransfer(
+        db,
+        mat.id,
+        req.params.id,
+        'review_to_institution',
+        acceptor_name,
+        'admin',
+        `${inst?.name || '鉴定机构'}`,
+        'institution',
+        true,
+        true,
+        true,
+        '受理后材料密封移交鉴定机构',
+      )
+    }
+
+    addStatusChangeLog(
+      db,
+      req.params.id,
+      oldStatus,
+      'fee_pending',
+      acceptor_name,
+      'admin',
+      `窗口受理，分配至${inst?.name || '鉴定机构'}`,
+    )
 
     addAuditLog(db, req.params.id, 'accept', acceptor_name, 'admin', '受理案件')
   })

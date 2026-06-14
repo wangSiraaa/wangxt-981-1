@@ -18,6 +18,7 @@ import deadlineRoutes from './routes/deadlines.js'
 import auditLogRoutes from './routes/audit-logs.js'
 import expertRoutes from './routes/experts.js'
 import institutionRoutes from './routes/institutions.js'
+import transferRoutes from './routes/transfers.js'
 import { initDatabase, getDb } from './database.js'
 
 const __filename = fileURLToPath(import.meta.url)
@@ -62,6 +63,8 @@ app.use('/api', deadlineRoutes)
 app.use('/api', auditLogRoutes)
 app.use('/api', expertRoutes)
 app.use('/api', institutionRoutes)
+app.use('/api/applications', transferRoutes)
+app.use('/api', transferRoutes)
 
 if (fs.existsSync(DIST_DIR)) {
   app.use(express.static(DIST_DIR, { maxAge: '1h', index: 'index.html' }))

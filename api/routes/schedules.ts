@@ -1,6 +1,14 @@
 import { Router, type Request, type Response } from 'express'
 import { v4 as uuidv4 } from 'uuid'
-import { getDb, addAuditLog } from '../database.js'
+import {
+  getDb,
+  addAuditLog,
+  checkScheduleBlockers,
+  adjustDeadline,
+  adjustAllActiveDeadlines,
+  addStatusChangeLog,
+  invalidateSchedule,
+} from '../database.js'
 
 const router = Router()
 
@@ -51,26 +59,22 @@ router.post('/:id/schedule', (req: Request, res: Response): void => {
     return
   }
 
-  const materials = db.prepare('SELECT * FROM material WHERE application_id = ?').all(req.params.id) as any[]
-  const allApproved = materials.length > 0 && materials.every((m) => m.status === 'approved')
-  if (!allApproved) {
-    res.status(400).json({ success: false, error: '材料未全部审核通过，无法排程', code: 'MATERIAL_INCOMPLETE' })
+  const blockerResult = checkScheduleBlockers(db, req.params.id, expert_id)
+  if (blockerResult.blocked) {
+    const errorMessages = blockerResult.blockers
+      .filter((b) => b.severity === 'error')
+      .map((b) => b.message)
+    res.status(400).json({
+      success: false,
+      error: `排期条件不满足：${errorMessages.join('；')}`,
+      code: 'SCHEDULE_BLOCKED',
+      data: {
+        blockers: blockerResult.blockers,
+        blocker_count: blockerResult.blockers.length,
+        can_schedule: false,
+      },
+    })
     return
-  }
-
-  const fee = db.prepare('SELECT * FROM fee WHERE application_id = ?').get(req.params.id) as any
-  if (!fee || fee.status !== 'paid') {
-    res.status(402).json({ success: false, error: '费用未缴纳，无法排程', code: 'FEE_UNPAID' })
-    return
-  }
-
-  const expert = db.prepare('SELECT * FROM expert WHERE id = ?').get(expert_id) as any
-  if (expert) {
-    const conflicts: string[] = JSON.parse(expert.conflict_case_nos || '[]')
-    if (conflicts.includes(app.case_no)) {
-      res.status(409).json({ success: false, error: '该专家与本案存在利益冲突', code: 'EXPERT_CONFLICT' })
-      return
-    }
   }
 
   const inst = db.prepare('SELECT * FROM institution WHERE id = ?').get(institution_id) as any
@@ -86,52 +90,136 @@ router.post('/:id/schedule', (req: Request, res: Response): void => {
   }
 
   const id = uuidv4()
-  db.prepare(
-    `INSERT INTO schedule (id, application_id, expert_id, institution_id, scheduled_date, scheduled_time, location, status, is_urgent, urgent_reason) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  ).run(id, req.params.id, expert_id, institution_id, scheduled_date, scheduled_time, location, 'pending', is_urgent ? 1 : 0, urgent_reason || null)
+  const oldStatus = app.status
 
-  db.prepare('UPDATE application SET status = ?, updated_at = datetime(\'now\') WHERE id = ?')
-    .run('scheduled', req.params.id)
+  const transaction = db.transaction(() => {
+    db.prepare(
+      `INSERT INTO schedule (id, application_id, expert_id, institution_id, scheduled_date, scheduled_time, location, status, is_urgent, urgent_reason) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(id, req.params.id, expert_id, institution_id, scheduled_date, scheduled_time, location, 'pending', is_urgent ? 1 : 0, urgent_reason || null)
 
-  addAuditLog(db, req.params.id, 'schedule', creator_name, 'admin', `排程确定: ${scheduled_date} ${scheduled_time} ${location}`)
+    db.prepare('UPDATE application SET last_status = ?, status = ?, reschedule_count = reschedule_count + 1, updated_at = datetime(\'now\') WHERE id = ?')
+      .run(oldStatus, 'scheduled', req.params.id)
+
+    addStatusChangeLog(
+      db,
+      req.params.id,
+      oldStatus,
+      'scheduled',
+      creator_name,
+      'admin',
+      `排期确定：${scheduled_date} ${scheduled_time} ${location}，鉴定人：${(db.prepare('SELECT name FROM expert WHERE id = ?').get(expert_id) as any)?.name || '未指定'}`,
+    )
+
+    addAuditLog(db, req.params.id, 'schedule', creator_name, 'admin', `排程确定: ${scheduled_date} ${scheduled_time} ${location}`)
+  })
+
+  transaction()
 
   const schedule = db.prepare('SELECT * FROM schedule WHERE id = ?').get(id)
   res.status(201).json({ success: true, data: schedule })
 })
 
 router.put('/schedules/:id', (req: Request, res: Response): void => {
-  const { scheduled_date, scheduled_time, location, rescheduler_name } = req.body
+  const { scheduled_date, scheduled_time, location, rescheduler_name, reason, supervisor_approval, supervisor_name, supervisor_note } = req.body
   if (!scheduled_date || !scheduled_time || !location || !rescheduler_name) {
     res.status(400).json({ success: false, error: '缺少必填字段', code: 'MISSING_FIELDS' })
     return
   }
 
   const db = getDb()
-  const schedule = db.prepare('SELECT * FROM schedule WHERE id = ?').get(req.params.id) as any
-  if (!schedule) {
+  const oldSchedule = db.prepare('SELECT * FROM schedule WHERE id = ?').get(req.params.id) as any
+  if (!oldSchedule) {
     res.status(404).json({ success: false, error: '排程不存在', code: 'NOT_FOUND' })
     return
   }
 
-  if (schedule.status === 'expired' || schedule.status === 'completed') {
+  if (oldSchedule.status === 'expired' || oldSchedule.status === 'completed') {
     res.status(400).json({ success: false, error: '排程已过期或已完成，无法更改', code: 'INVALID_STATUS' })
     return
   }
 
-  const conflict = checkConflicts(db, schedule.expert_id, schedule.institution_id, scheduled_date, scheduled_time, location, req.params.id)
+  const conflict = checkConflicts(db, oldSchedule.expert_id, oldSchedule.institution_id, scheduled_date, scheduled_time, location, req.params.id)
   if (conflict) {
     res.status(409).json({ success: false, error: conflict, code: 'SCHEDULE_CONFLICT' })
     return
   }
 
-  db.prepare(
-    'UPDATE schedule SET scheduled_date = ?, scheduled_time = ?, location = ?, reschedule_count = reschedule_count + 1 WHERE id = ?',
-  ).run(scheduled_date, scheduled_time, location, req.params.id)
+  const app = db.prepare('SELECT * FROM application WHERE id = ?').get(oldSchedule.application_id) as any
+  const oldDate = oldSchedule.scheduled_date
+  const newScheduleId = uuidv4()
 
-  addAuditLog(db, schedule.application_id, 'reschedule', rescheduler_name, 'admin', `排程更改: ${scheduled_date} ${scheduled_time} ${location}`)
+  const transaction = db.transaction(() => {
+    invalidateSchedule(
+      db,
+      req.params.id,
+      oldSchedule.application_id,
+      'reschedule',
+      reason || '机构改期',
+      rescheduler_name,
+      'admin',
+      supervisor_approval || false,
+      supervisor_name,
+      supervisor_note,
+    )
 
-  const updated = db.prepare('SELECT * FROM schedule WHERE id = ?').get(req.params.id)
-  res.json({ success: true, data: updated })
+    db.prepare(
+      `INSERT INTO schedule (id, application_id, expert_id, institution_id, scheduled_date, scheduled_time, location, status, is_urgent, urgent_reason, reschedule_count) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      newScheduleId,
+      oldSchedule.application_id,
+      oldSchedule.expert_id,
+      oldSchedule.institution_id,
+      scheduled_date,
+      scheduled_time,
+      location,
+      'pending',
+      oldSchedule.is_urgent,
+      oldSchedule.urgent_reason,
+      (oldSchedule.reschedule_count || 0) + 1,
+    )
+
+    db.prepare(
+      'UPDATE application SET reschedule_count = reschedule_count + 1, updated_at = datetime(\'now\') WHERE id = ?',
+    ).run(oldSchedule.application_id)
+
+    const oldDateObj = new Date(oldDate)
+    const newDateObj = new Date(scheduled_date)
+    const extendDays = Math.max(0, Math.ceil((newDateObj.getTime() - oldDateObj.getTime()) / 86400000))
+    if (extendDays > 0) {
+      adjustDeadline(
+        db,
+        oldSchedule.application_id,
+        'appraisal',
+        'reschedule',
+        extendDays,
+        `机构改期，原排期${oldDate}改为${scheduled_date}，鉴定期限顺延${extendDays}天`,
+        rescheduler_name,
+        'admin',
+        supervisor_approval || false,
+        supervisor_name,
+        supervisor_note,
+      )
+    }
+
+    if (app) {
+      addStatusChangeLog(
+        db,
+        oldSchedule.application_id,
+        app.status,
+        app.status,
+        rescheduler_name,
+        'admin',
+        `排期改期：${oldDate} ${oldSchedule.scheduled_time} → ${scheduled_date} ${scheduled_time} ${location}${reason ? `，原因：${reason}` : ''}`,
+      )
+    }
+
+    addAuditLog(db, oldSchedule.application_id, 'reschedule', rescheduler_name, 'admin', `排程更改: ${scheduled_date} ${scheduled_time} ${location}`)
+  })
+
+  transaction()
+
+  const updated = db.prepare('SELECT * FROM schedule WHERE id = ?').get(newScheduleId)
+  res.json({ success: true, data: updated, message: `旧排期已生成失效记录，新排期已创建` })
 })
 
 router.get('/schedules', (req: Request, res: Response): void => {
@@ -236,7 +324,7 @@ router.post('/:id/urgent', (req: Request, res: Response): void => {
 })
 
 router.put('/urgents/:id/approve', (req: Request, res: Response): void => {
-  const { approver_name, approver_note } = req.body
+  const { approver_name, approver_note, shorten_days } = req.body
   if (!approver_name) {
     res.status(400).json({ success: false, error: '缺少审批人', code: 'MISSING_FIELDS' })
     return
@@ -254,14 +342,80 @@ router.put('/urgents/:id/approve', (req: Request, res: Response): void => {
     return
   }
 
-  db.prepare(
-    'UPDATE schedule SET urgent_approved = 1, urgent_approver = ?, urgent_approve_note = ?, urgent_approved_at = datetime(\'now\') WHERE id = ?',
-  ).run(approver_name, approver_note || null, req.params.id)
+  const app = db.prepare('SELECT * FROM application WHERE id = ?').get(schedule.application_id) as any
+  const oldStatus = app?.status
+  const actualShorten = Math.max(0, shorten_days || 10)
 
-  addAuditLog(db, schedule.application_id, 'urgent_approve', approver_name, 'admin', `加急排程已批准${approver_note ? ': ' + approver_note : ''}`)
+  const transaction = db.transaction(() => {
+    db.prepare(
+      'UPDATE schedule SET urgent_approved = 1, urgent_approver = ?, urgent_approve_note = ?, urgent_approved_at = datetime(\'now\') WHERE id = ?',
+    ).run(approver_name, approver_note || null, req.params.id)
+
+    db.prepare(
+      'UPDATE application SET is_urgent = 1, urgent_approved = 1, urgent_approver = ?, urgent_approved_at = datetime(\'now\') WHERE id = ?',
+    ).run(approver_name, schedule.application_id)
+
+    adjustDeadline(
+      db,
+      schedule.application_id,
+      'schedule',
+      'urgent',
+      -actualShorten,
+      `加急审批通过，排期期限提前${actualShorten}个工作日`,
+      approver_name,
+      'supervisor',
+      true,
+      approver_name,
+      approver_note || `加急审批通过，提前${actualShorten}天`,
+    )
+
+    adjustDeadline(
+      db,
+      schedule.application_id,
+      'appraisal',
+      'urgent',
+      -Math.round(actualShorten * 0.5),
+      `加急审批通过，鉴定期限提前${Math.round(actualShorten * 0.5)}个工作日`,
+      approver_name,
+      'supervisor',
+      true,
+      approver_name,
+      approver_note || `加急审批通过`,
+    )
+
+    adjustDeadline(
+      db,
+      schedule.application_id,
+      'completion',
+      'urgent',
+      -Math.round(actualShorten * 0.7),
+      `加急审批通过，完成期限提前${Math.round(actualShorten * 0.7)}个工作日`,
+      approver_name,
+      'supervisor',
+      true,
+      approver_name,
+      approver_note || `加急审批通过`,
+    )
+
+    if (oldStatus) {
+      addStatusChangeLog(
+        db,
+        schedule.application_id,
+        oldStatus,
+        oldStatus,
+        approver_name,
+        'supervisor',
+        `加急审批通过${approver_note ? '：' + approver_note : ''}，排期/鉴定/完成期限均已提前`,
+      )
+    }
+
+    addAuditLog(db, schedule.application_id, 'urgent_approve', approver_name, 'admin', `加急排程已批准${approver_note ? ': ' + approver_note : ''}，各期限提前${actualShorten}-${Math.round(actualShorten * 0.7)}个工作日`)
+  })
+
+  transaction()
 
   const updated = db.prepare('SELECT * FROM schedule WHERE id = ?').get(req.params.id)
-  res.json({ success: true, data: updated })
+  res.json({ success: true, data: updated, message: `加急审批通过，排期/鉴定/完成期限已提前${actualShorten}/${Math.round(actualShorten * 0.5)}/${Math.round(actualShorten * 0.7)}天` })
 })
 
 export default router
